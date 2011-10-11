@@ -18,6 +18,9 @@ def buildMatNetwork(name):
     file         - file node
     place2d      - the place2dTexture node
     '''
+    # Pre-condition the name to suppress warnings
+    name = name.replace('.','_')
+    
     # Create the lambert
     lambert = cmds.shadingNode("lambert", asShader=True, n=name+"_lambert")
     
@@ -110,6 +113,100 @@ def importMeshToMaya(mesh):
     '''
     return list(nodes)
 
+
+def meshForNode(node, modl):
+    '''
+    Returns ModlMesh object for node and modl
+    '''
+    # @TODO: Should this move to the object itself?
+    if node.mesh_id == None:
+        return None
+    return modl.geosets[0].meshes[node.mesh_id]
+
+def buildNode(node, modl):
+    '''
+    Builds the specificed modlNode in scene. Uses info from the modl object
+    that it belongs to, so that must be provided as well.
+
+    returns a dictionary:
+    nodePath    - dag path to the transform for this node
+    meshPath    - dag path to mesh that is directly under this node, if any
+    '''
+    # Create the node
+    newNode = cmds.createNode('transform', name=node.name)
+    
+    nodeInfo = {'nodePath':newNode, 'meshPath':None}
+
+    # See if this node has a mesh to parent
+    mesh = meshForNode(node, modl)
+    if mesh != None and mesh.vertices:
+        # Import the mesh and parent it
+        objNodes = importMeshToMaya(mesh)
+        importedTransform =cmds.ls(objNodes, dag=True, type='transform')
+        cmds.parent(importedTransform, newNode, r=True)
+        nodeInfo['meshPath'] = importedTransform[0]
+    
+    # Setup the pivot
+    cmds.xform(newNode, t=node.pivot)
+    cmds.xform(newNode, pivots=[-axis for axis in node.pivot],
+            preserve=False)
+    cmds.makeIdentity(newNode, apply=True, t=True, r=True, s=True, 
+            n=False)
+    
+    # Apply the transforms
+    cmds.xform(newNode, t=node.position) 
+    # x = pitch
+    # y = roll
+    # z = yaw
+    cmds.xform(newNode, ro=(node.pitch, node.roll, node.yaw))
+    
+    return nodeInfo
+
+def materialForFace(face, modl):
+    '''
+    Returns material name for the given face and modl
+    '''
+    # @TODO: Should this move to the object itself?
+    if not face.has_material:
+        return None
+    return modl.materials[face.material_index]
+
+
+def applyMaterials(mesh, modl, meshInScene, materialMap={}):
+    '''
+    Applies materials for mesh using those specified in modl.
+
+    materialMap is a dictionary with material names from the modl as keys,
+    and dictionaries with in-scene material definitions. See buildMatNetwork
+    for mor info about the dict format.
+
+    Returns a mapping of newly created materials in scene, if any. This
+    will be the same format as materialMap, but only new things
+    '''
+    newMaterials = {}
+    for i,face in enumerate(mesh.faces):
+        material = materialForFace(face, modl)
+        if not material:
+            continue
+
+        # Get the shadingGroup
+        try:
+            if materialMap.has_key(material):
+                sg = materialMap[material]['shadingGroup']
+            else:
+                sg = newMaterials[material]['shadingGroup']
+        except KeyError:
+            # Material doesn't exist yet, make it!
+            matInfo = buildMatNetwork(material)
+            newMaterials[material] = matInfo
+            sg = matInfo['shadingGroup']
+        
+        # Assign the face
+        facePath = meshInScene+".f[%d]"%i
+        cmds.sets(facePath, e=True, forceElement=sg)
+
+    return newMaterials
+
 def buildModl(modl):
     '''
     Builds the specified Modl in scene
@@ -118,8 +215,9 @@ def buildModl(modl):
     parentMap = {}
     materialMap = {}
     for i,node in enumerate(modl.nodes):
-        # Create the node
-        newNode = cmds.createNode('transform', name=node.name)
+        nodeInfo = buildNode(node, modl)
+        newNode = nodeInfo['nodePath']
+        newMesh = nodeInfo['meshPath']
         
         # Account for the node
         nodes.append(newNode)
@@ -127,6 +225,15 @@ def buildModl(modl):
         # Save the node for parenting later
         if node.has_parent:
             parentMap[newNode] = node.parent_id
+        
+        # If a mesh was brought in, apply it's materials
+        if newMesh:
+            newMats = applyMaterials(meshForNode(node, modl), modl, newMesh,
+                    materialMap)
+            materialMap.update(newMats)
+        '''
+        # Create the node
+        newNode = cmds.createNode('transform', name=node.name)
         
         # See if this node has a mesh to parent
         if node.mesh_id != None:
@@ -138,12 +245,13 @@ def buildModl(modl):
             objNodes = importMeshToMaya(mesh)
             importedTransform =cmds.ls(objNodes, dag=True, type='transform')
             cmds.parent(importedTransform, newNode, r=True)
-
+        '''
+        ''' 
             # Apply Materials
             for i,face in enumerate(mesh.faces):
-                if not face.has_material:
+                material = materialForFace(face, modl)
+                if not material:
                     continue
-                material = modl.materials[face.material_index]
 
                 # Get the shadingGroup
                 try:
@@ -157,7 +265,8 @@ def buildModl(modl):
                 # Assign the face
                 facePath = importedTransform[0]+".f[%d]"%i
                 cmds.sets(facePath, e=True, forceElement=sg)
-        
+        '''
+        '''
         # Setup the pivot
         cmds.xform(newNode, t=node.pivot)
         cmds.xform(newNode, pivots=[-axis for axis in node.pivot],
@@ -171,6 +280,7 @@ def buildModl(modl):
         # y = roll
         # z = yaw
         cmds.xform(newNode, ro=(node.pitch, node.roll, node.yaw))
+        '''
     
     # Parent all the nodes
     for node,i in parentMap.items():
