@@ -1,0 +1,72 @@
+#!/usr/bin/env python2_maya
+
+import os, sys
+
+import maya.cmds as cmds
+
+import ma3do
+import lecFormats
+
+def parseArgs():
+    try:
+        inFile = sys.argv[1]
+        outDir = sys.argv[2]
+    except IndexError:
+        msg =  "ERROR: you must specify one 3do file in and a directory "
+        msg += "to export to"
+        print >> sys.stderr, msg
+        sys.exit(1)
+
+    if not os.path.exists(outDir):
+        msg = "ERROR: the output directory must be an existing directory"
+        print >> sys.stderr, msg
+        sys.exit(1)
+
+    if not os.path.exists(inFile):
+        msg = "ERROR: the file '%' does not exist"%inFile
+        print >> sys.stderr, msg
+        sys.exit(1)
+
+
+    return (None, [inFile, outDir])
+
+def main():
+    options, args = parseArgs()
+    modlBasename = os.path.basename(args[0])
+    modlName = os.path.splitext(modlBasename)[0]
+    
+    # Build the path for the asset 
+    assetDir = os.path.join(args[1], modlName)
+    if not os.path.exists(assetDir):
+        os.makedirs(assetDir)
+
+    # Build the place to export textures to
+    assetName = os.path.splitext(modlBasename)[0]
+    txDir = os.path.join(assetDir, 'textures')
+    if not os.path.exists(txDir):
+        os.makedirs(txDir)
+
+    # Export the textures
+    # os.system('/Users/eric/grim-proj/dump3dotx %s %s'%(args[0], args[1]))
+
+    # get the 3do
+    modl = lecFormats.ModlFile(args[0])
+
+    # Init maya
+    import maya.standalone
+    maya.standalone.initialize()
+    
+    # build the model in memory
+    # @TODO: use an env var or relative path?
+    ma3do.buildModl(modl, os.path.abspath(txDir))
+
+    # Save the .ma file
+    maPath = os.path.abspath(os.path.join(assetDir, modlName+'.ma'))
+    cmds.file(rename = maPath)
+    cmds.file(save=True, f=True, options="v=0", type="mayaAscii")
+
+    print >> sys.stdout, "%s exported to %s"%(args[0], assetDir) 
+
+if __name__ == "__main__":
+    main()
+

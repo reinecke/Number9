@@ -1,5 +1,7 @@
 #!/usr/bin/env python
+import os
 import pascalData as pData
+import mat
 class VArray(pData.FloatArray):
     '''
     For reading float vector data from binary files
@@ -44,6 +46,8 @@ class ModlFile(object):
         self.name = None
         self.geosets = []
         self.nodes = []
+        self.material_path = os.path.dirname(file_name)
+        self._materialSizes = []
 
         # Read the file
         if not self.file_name:
@@ -52,7 +56,28 @@ class ModlFile(object):
         self.readFromFile(f)
         print "there are", len(f.read()), "leftover bytes"
         f.close()
+    
+    def getMaterialSize(self, index):
+        '''
+        Returns a tuple, (sizeX, sizeY) for the material at index
+        '''
+        # Return the size for that material if it's been cached already
+        cachedSize = self._materialSizes[index]
+        if cachedSize:
+            return cachedSize
 
+        # Cache that material's size
+        matBasename = self.materials[index]
+        material = mat.MatFile(os.path.join(self.material_path, 
+            matBasename))
+        try:
+            matSize = (material.textures[0].sizeX, 
+                    material.textures[0].sizeY)
+            self._materialSizes[index] = matSize
+            return matSize
+        except IndexError:
+            return None
+    
     def readFromFile(self, f):
         '''
         Reads the MODL from file into memory
@@ -62,6 +87,7 @@ class ModlFile(object):
         self.type = headerData['type']
         self.name = headerData['name']
         self.materials = headerData['mat_names']
+        self._materialSizes = [None] * len(self.materials)
         del(headerData)
         
         geosetHeader = TModlGeosetHeader().dictFromFile(f)
@@ -81,7 +107,6 @@ class ModlFile(object):
         footer = TModlFooter().dictFromFile(f)
         self.model_radius = footer['model_radius']
         self.insertion_offset = footer['insertion_offset']
-        
 
 class ModlGeoset(object):
     def __init__(self, modlFile):
@@ -96,7 +121,23 @@ class ModlGeoset(object):
             mesh.readFromFile(f)
             self.meshes.append(mesh)
 
+# class TModlMaterial(pData.DataStructure):
+    # def __init__(self):
+        # '''
+        # material name|32 bytes, string
 
+        # one per material
+        # '''    
+        # super(TModlMaterials, self).__init__()
+        # self.append(pData.CharArray(32), 'mat_name')
+
+# class TModlName(pData.DataStructure):
+    # def __init__(self):
+        # '''
+        # 3d model name|32 bytes, string
+        # '''    
+        # super(TModlName, self).__init__()
+        # self.append(pData.CharArray(32), 'name')
 class TModlHeader(pData.DataStructure):
     def __init__(self):
         '''
@@ -125,24 +166,6 @@ class TModlHeader(pData.DataStructure):
         data['name'] = name
 
         return data
-
-# class TModlMaterial(pData.DataStructure):
-    # def __init__(self):
-        # '''
-        # material name|32 bytes, string
-
-        # one per material
-        # '''    
-        # super(TModlMaterials, self).__init__()
-        # self.append(pData.CharArray(32), 'mat_name')
-
-# class TModlName(pData.DataStructure):
-    # def __init__(self):
-        # '''
-        # 3d model name|32 bytes, string
-        # '''    
-        # super(TModlName, self).__init__()
-        # self.append(pData.CharArray(32), 'name')
 
 class TModlGeosetHeader(pData.DataStructure):
     def __init__(self):
@@ -300,8 +323,8 @@ class ModlMesh(object):
         self.vertex_normals = data['vertex_normals']
         self.has_shadow = data['has_shadow']
         self.mesh_radius = data['mesh_radius']
-        
-    def writeObjToFile(self, f):
+       
+    def writeObjToFile(self, f, includeShaders=True):
         '''
         Writes the mesh data to an open file in obj format
         '''
@@ -314,9 +337,20 @@ class ModlMesh(object):
         
         # seperate the sections
         f.write('\n')
+        
+        # Get the material sizes for vertex coord translations to 0-1 space
+        vertTextureSizes = [None]*len(self.texture_vertices)
+        for face in self.faces:
+            matSize = self.modlFile.getMaterialSize(face.material_index)
+            for i in face.texture_vertex_indices:
+                vertTextureSizes[i] = matSize
 
         # write the texture coordinates
-        for vert in self.texture_vertices:
+        for i,vert in enumerate(self.texture_vertices):
+            # remap to 0-1 space, and for some reason the second one comes in negative
+            txSize = vertTextureSizes[i]
+            if txSize != None:
+                vert = (vert[0]/txSize[0], -vert[1]/txSize[1])
             f.write('vt '+' '.join(["%6f"%axis for axis in vert])+'\n')
         
         # seperate the sections
@@ -326,36 +360,33 @@ class ModlMesh(object):
         for normal in self.vertex_normals:
             f.write('vn '+' '.join(["%6f"%axis for axis in normal])+'\n')
         
-        # seperate the sections
-        f.write('\n')
-
-        # group the faces by material
-        matMap = [(i,face.material_index) for i,face in enumerate(self.faces)]
-        matMap = sorted(matMap, key=lambda x:x[1])
-
-        # Write the face definitions
+        # build the face definitions
+        faceDefs = ''
         currentMat = None
-        for face_index, mat_index in matMap:
-            # If this face has a different material than the last, tell someone!
-            if currentMat != mat_index and mat_index:
-                f.write('\nusemtl '+self.modlFile.materials[mat_index])
-            currentMat = mat_index
+        for face in self.faces:
+            # If this face has a different material than the last, 
+            # tell someone!
+            if includeShaders and (currentMat != face.material_index and 
+                    face.material_index != None):
+                f.write('\nusemtl '+
+                        self.modlFile.materials[face.material_index])
+            currentMat = face.material_index
 
             # Start the face definition
             f.write('\nf')
 
             # Write each vert index out
-            face = self.faces[face_index]
             for i, vertIndex in enumerate(face.vertex_indices):
                 # a face definition with texture is:
                 #    f vert_index/tx_vert_index/vert_normal_index
                 # Otherwise:
                 #    f vert_index//vert_normal_index
+                # Also, obj uses indices that start at 1
                 if face.has_texture:
                     txCoordIndex = face.texture_vertex_indices[i]
-                    params = [vertIndex, txCoordIndex, vertIndex]
+                    params = [vertIndex+1, txCoordIndex+1, vertIndex+1]
                 else:
-                    params = [vertIndex, '', vertIndex]
+                    params = [vertIndex+1, '', vertIndex+1]
                 f.write(' '+'/'.join([str(param) for param in params]))
 
 class ModlFace(object):

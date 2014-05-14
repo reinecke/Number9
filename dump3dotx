@@ -1,0 +1,70 @@
+#!/usr/bin/env python
+
+import os, sys
+import lecFormats
+import lecFormats.grimCmpList
+
+# Grab the cmp file mapping for grim
+cmpMap = lecFormats.grimCmpList.cmpMap
+
+def parseArgs():
+    # TODO: really? I'm too lazy for argparse?
+    try:
+        inFile = sys.argv[1]
+        outDir = sys.argv[2]
+    except IndexError:
+        msg =  "ERROR: you must specify one 3do file in and a directory "
+        msg += "to export to"
+        print >> sys.stderr, msg
+        sys.exit(1)
+
+    if not os.path.exists(outDir):
+        msg = "ERROR: the output directory must be an existing directory"
+        print >> sys.stderr, msg
+        sys.exit(1)
+
+    return (None, [inFile, outDir])
+
+def main():
+    options, args = parseArgs()
+    modlBasename = os.path.basename(args[0])
+    modlFolder = os.path.dirname(args[0])
+
+    # Build the place to export textures to
+    assetName = os.path.splitext(modlBasename)[0]
+    txDir = os.path.join(args[1], assetName, 'textures')
+    if not os.path.exists(txDir):
+        os.makedirs(txDir)
+
+    # Get a cmp for the 3do
+    try:
+        cmpPath = os.path.join(modlFolder, cmpMap[modlBasename])
+    except KeyError:
+        msg = "ERROR: unable to determine cmp palette file"
+        print >> sys.stderr, msg
+        sys.exit(1)
+    palette = lecFormats.CmpFile(cmpPath)
+
+    # Get the material list for the 3do
+    modl = lecFormats.ModlFile(args[0])
+    materials = modl.materials
+    del(modl)
+    
+    # Convert each material
+    for mat_name in materials:
+        matFile = lecFormats.MatFile(os.path.join(modlFolder, mat_name))
+        for i,texture in enumerate(matFile.textures):
+            # build up the path to write the texture file to
+            txfn = os.path.splitext(mat_name)[0]
+            if matFile.count > 1:
+                txfn += '-'+str(i)
+            txfn += '.tif'
+            txPath = os.path.join(txDir, txfn) 
+            
+            txImg = texture.textureImage(palette)
+            txImg.save(txPath)
+            del(txImg)
+
+if __name__ == "__main__":
+    main()
+

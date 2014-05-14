@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 import maya.cmds as cmds
-import sys, tempfile
+import os, sys, tempfile
 sys.path = ['/Users/eric/grim-proj'] + sys.path
 from lecFormats import modl
+from lecFormats import mat
 
 #select -r m_chest1_PLY.f[1] ;
 #select -tgl m_chest1_PLY.f[19] ;
@@ -65,12 +66,23 @@ def importMeshToMaya(mesh):
     
     # Write the obj data out
     f = open(fpath, 'w')
+    f.write('\n')
     mesh.writeObjToFile(f, includeShaders=False)
+    f.write('\n')
     f.close()
     
     # import that obj data
-    nodes = cmds.file(fpath, i=True, type="OBJ", options="mo=1;lo=0", 
-            returnNewNodes=True)
+    try:
+        nodes = cmds.file(fpath, i=True, type="OBJ", options="mo=1;lo=0", 
+                returnNewNodes=True)
+    except RuntimeError:
+        print >> sys.stderr, "Error: mesh: '%s'would not convert"%mesh.name
+        #print >> sys.stderr, e
+        print >> sys.stderr, "Attempting to continue"
+        return None
+
+    # Remove the intermediate obj
+    os.remove(fpath)
 
     # Fix up the naming and such
     importedTransform = cmds.ls(nodes, dag=True, type='transform')[0]
@@ -80,37 +92,7 @@ def importMeshToMaya(mesh):
     importedTransform = cmds.rename(importedTransform, mesh.name+'_PLY')
     # @TODO: THis should probably include the renamed shape node too
     nodes.add(importedTransform)
-    '''
-    # Merge common materials
-    newSes = cmds.ls(list(nodes), type='shadingEngine')
-    for newSe in newSes:
-        matchFound = False
-        for se in existingSes:
-            if se not in newSe:
-                continue
-            # Merge the new shading engine with the existing one
-            seConns = cmds.listConnections(newSe, plugs=True, type='mesh')
-            for i in range(len(seConns)/2):
-                src = seConns[i*2]
-                dst = seConns[(i*2)+1]
-                print src,dst
-                import pdb;pdb.set_trace()
-                # only interested in things this connects to
-                if src.split('.')[0] != newSe:
-                    continue
-                
-                # Only interested in geo connections
-                if not cmds.ls(dst.split('.')[0], type='mesh'):
-                    continue
-                
-                # Re-connect to the old shader
-                matchFound = True
-                cmds.disconnectAttr(src, dst)
-                cmds.connectAttr(se+'.'+src.split('.')[-1], dst)
-        
-        if matchFound:
-            cmds.delete(newSe)
-    '''
+    
     return list(nodes)
 
 
@@ -142,9 +124,12 @@ def buildNode(node, modl):
     if mesh != None and mesh.vertices:
         # Import the mesh and parent it
         objNodes = importMeshToMaya(mesh)
-        importedTransform =cmds.ls(objNodes, dag=True, type='transform')
-        cmds.parent(importedTransform, newNode, r=True)
-        nodeInfo['meshPath'] = importedTransform[0]
+        if objNodes:
+            importedTransform = cmds.ls(objNodes, dag=True,
+                    type='transform')
+            importedTransform = cmds.parent(importedTransform, newNode,
+                    r=True)
+            nodeInfo['meshPath'] = importedTransform[0]
     
     # Setup the pivot
     cmds.xform(newNode, t=node.pivot)
@@ -207,7 +192,7 @@ def applyMaterials(mesh, modl, meshInScene, materialMap={}):
 
     return newMaterials
 
-def buildModl(modl):
+def buildModl(modl, textureDir):
     '''
     Builds the specified Modl in scene
     '''
@@ -231,66 +216,27 @@ def buildModl(modl):
             newMats = applyMaterials(meshForNode(node, modl), modl, newMesh,
                     materialMap)
             materialMap.update(newMats)
-        '''
-        # Create the node
-        newNode = cmds.createNode('transform', name=node.name)
-        
-        # See if this node has a mesh to parent
-        if node.mesh_id != None:
-            # get the geo for this node and parent
-            mesh = modl.geosets[0].meshes[node.mesh_id]
-            if not len(mesh.vertices):
-                continue
-            
-            objNodes = importMeshToMaya(mesh)
-            importedTransform =cmds.ls(objNodes, dag=True, type='transform')
-            cmds.parent(importedTransform, newNode, r=True)
-        '''
-        ''' 
-            # Apply Materials
-            for i,face in enumerate(mesh.faces):
-                material = materialForFace(face, modl)
-                if not material:
-                    continue
-
-                # Get the shadingGroup
-                try:
-                    sg = materialMap[material]['shadingGroup']
-                except KeyError:
-                    # Material doesn't exist yet, make it!
-                    matInfo = buildMatNetwork(material)
-                    materialMap[material] = matInfo
-                    sg = matInfo['shadingGroup']
-                
-                # Assign the face
-                facePath = importedTransform[0]+".f[%d]"%i
-                cmds.sets(facePath, e=True, forceElement=sg)
-        '''
-        '''
-        # Setup the pivot
-        cmds.xform(newNode, t=node.pivot)
-        cmds.xform(newNode, pivots=[-axis for axis in node.pivot],
-                preserve=False)
-        cmds.makeIdentity(newNode, apply=True, t=True, r=True, s=True, 
-                n=False)
-        
-        # Apply the transforms
-        cmds.xform(newNode, t=node.position) 
-        # x = pitch
-        # y = roll
-        # z = yaw
-        cmds.xform(newNode, ro=(node.pitch, node.roll, node.yaw))
-        '''
-    
+           
     # Parent all the nodes
     for node,i in parentMap.items():
         parentNode = nodes[i]
         cmds.parent(node, parentNode, r=True)
     
+    # set the texture paths
+    for material, matInfo in materialMap.items():
+        fileNode = matInfo['file']
+        matPath = os.path.join(os.path.dirname(modl.file_name), material)
+        matObj = mat.MatFile(matPath)
+        if matObj.count == 1:
+            txPath = os.path.join(textureDir, 
+                    os.path.splitext(material)[0] + '.tif')
+        else:
+            txPath = os.path.join(textureDir, 
+                    os.path.splitext(material)[0] + '-0.tif')
+
+        cmds.setAttr(fileNode+'.fileTextureName', txPath, type='string')
+    
     # Return a mapping of source node names to maya transforms
     return zip([node.name for node in modl.nodes], [nodes])
-
-
-
 
 

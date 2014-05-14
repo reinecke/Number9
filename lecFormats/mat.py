@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 import struct
-import Image, ImageDraw
+try:
+    import Image, ImageDraw
+except ImportError:
+    print "Warning: Could not import PIL, image writing disabled"
 import pascalData as pData
 
 class TMatHeader(pData.DataStructure):
