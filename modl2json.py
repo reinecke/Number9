@@ -2,6 +2,9 @@ import json, random
 
 from lecFormats import modl
 
+METADATA_GENERATED_BY = "Number 9 Converter"
+
+# Three.js face definition flags
 TRIANGLE = 0
 QUAD = 1
 FACE_MATERIAL = 1 << 1
@@ -12,75 +15,111 @@ FACE_VERTEX_NORMAL = 1 << 5
 FACE_COLOR = 1 << 6
 FACE_VERTEX_COLOR = 1 << 7
 
-
-def default_material():
+def random_material_dict():
+    '''
+    returns a randomly generated material
+    '''
     return {
-        "DbgColor" : 15658734,
-        "DbgIndex" : 0,
-        "DbgName" : "dummy",
-        "colorDiffuse" : [ 0, 1, 0 ]
-    }
+	#"DbgColor" : 15658734,
+	#"DbgIndex" : 0,
+	#"DbgName" : "monster",
+	"colorAmbient" : [random.random(), random.random(), random.random()],
+	"colorDiffuse" : [random.random(), random.random(), random.random()],
+    "colorSpecular" : [random.random(), random.random(), random.random()],
+	#"mapDiffuse" : "monster.jpg",
+	#"mapDiffuseWrap" : ["repeat", "repeat"],
+	"shading" : "Lambert",
+	"specularCoef" : 50,
+	#"transparency" : 1.0,
+	"vertexColors" : False
+	}
 
-def random_rgb_color():
-    int_val = (random.randint(0,255), random.randint(0,255), 
-            random.randint(0,255))
-    float_val = tuple([i/255.0 for i in int_val])
-    return float_val, int_val
+def face_list_for_mesh(mesh, material_index_map = None):
+    '''
+    given a ModlMesh object, returns a face list for the Three.js json
+    format.
 
-def convert_manny():
-    manny = modl.ModlFile("/Volumes/eric/grim-proj/grim-data/mannysuit.3do")
-
-    head = [m for m in manny.geosets[0].meshes if 'head' in m.name][0]
-    
-    verts = reduce(lambda x,y:x+list(y), head.vertices, [])
-    
-    materials = []
+    if material_index_map is provided, the keys should be the index of the
+    original material and values should be the new material index to use
+    '''
     faces = []
-    for face in head.faces:
-        if len(face.vertex_indices) == 3:
-            face_type = TRIANGLE | FACE_MATERIAL
-        elif len(face.vertex_indices) == 4:
-            face_type = QUAD | FACE_MATERIAL
+    for face in mesh.faces:
+        # Identify the vert count
+        vert_count = len(face.vertex_indices)
+        if vert_count == 3:
+            face_flags = TRIANGLE
+        elif vert_count == 4:
+            face_flags = QUAD
         else:
-            print "unsupported face count"
+            # TODO: Tessellate here?
+            print "unsupported face count:", vert_count
             continue
         
-        faces.append(face_type)
+        # Determine if we'll be writing a material index
+        if face.has_material:
+            face_flags |= FACE_MATERIAL
+        
+        faces.append(face_flags)
         faces.extend(face.vertex_indices)
-
-        # Generate and add material
-        mat_color_float, mat_color_int = random_rgb_color()
-        color_value = (mat_color_int[2] | (mat_color_int[1] << 8) 
-                | (mat_color_int[0] << 16))
-        mat_index = len(materials)
-        mat = {#"DbgColor" : color_value,
-        #"DbgIndex" : mat_index,
-        #"DbgName" : "mat%d"%mat_index,
-        "type": "MeshLambertMaterial",
-        #"color" : mat_color_float}
-        "color" : color_value,
-        "ambient": color_value,
-        "emissive": color_value,
-        "blending": 0,
-        "opacity": 0,
-        "transparent": False,
-        "wireframe": False}
         
-        faces.append(mat_index)
-        materials.append(mat)
+        # add the material index
+        if face.has_material:
+            if material_index_map is None:
+                mat_idx = face.material_index
+            else:
+                mat_idx = material_index_map.get(face.material_index, 0)
+            faces.append(mat_idx)
+    
+    return faces
 
-        
-    outdict = {"metadata": {
-        "version" : 3,
-        #"type":"object",
-        "generator":"modl2json"},
-        "materials": materials, 
-        #"geometries" : [
-            #"metadata" : {"version":4.3,
-             #       "type":"geometry",
-             #       "generator": "modl2json"},
-                "vertices":verts, 
-                "faces":faces}
+def modl_mesh_to_dict(mesh, material_index_map = None):
+    '''
+    given a ModlMesh object, returns a dictionary suitable for conversion
+    to Three.js json.
+
+    if material_index_map is provided, the keys should be the index of the
+    original material and values should be the new material index to use
+    '''
+    mesh_dict = {"metadata" :
+        {
+        "formatVersion" : 3,
+        "generatedBy"   : METADATA_GENERATED_BY,
+        #"vertices"      : 444,
+        #"faces"         : 884,
+        #"normals"       : 444,
+        #"colors"        : 0,
+        #"uvs"           : 322,
+        #"materials"     : 1,
+        #"morphTargets"  : 24
+        },
+        # Grim models were rediculously small, make 'em bigger
+        "scale" : 0.001
+    }
+    mesh_dict['name'] = mesh.name
+
+    # Create the flat vert and uv list
+    mesh_dict['vertices'] = reduce(lambda x,y:x+list(y), mesh.vertices, [])
+    mesh_dict['uvs'] = [reduce(lambda x,y:x+list(y), mesh.texture_vertices, 
+        [])]
+
+    # Create the face index list
+    mesh_dict['faces'] = face_list_for_mesh(mesh, material_index_map)
+
+    return mesh_dict
+
+def convert_manny():
+    # seed the random generator to keep stable output between runs
+    random.seed("Manny Calavera")
+
+    # Load manny through the LECFormats modl parser
+    manny = modl.ModlFile("/Volumes/eric/grim-proj/grim-data/mannysuit.3do")
+    
+    # grab his head mesh
+    head = [m for m in manny.geosets[0].meshes if 'head' in m.name][0]
+    
+    outdict = modl_mesh_to_dict(head)
+    
+    outdict['materials'] = [random_material_dict() for i in manny.materials]
 
     f=open('/Users/eric/Desktop/mannyhead.js', 'w')
     f.write(json.dumps(outdict))
